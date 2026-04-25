@@ -8,6 +8,7 @@ use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 
 class AntiBotMiddleware
 {
@@ -42,7 +43,6 @@ class AntiBotMiddleware
 
             // 2. 檢查黑名單狀態
             $status = Redis::get($statusKey);
-
             if ($status === 'blocked') {
                 Log::warning('被封鎖 IP 嘗試訪問', [
                     'ip' => $ip,
@@ -51,7 +51,6 @@ class AntiBotMiddleware
                     'path' => $path,
                     'status' => $status
                 ]);
-                
                 abort(403, '您的 IP 因驗證失敗多次已被暫時封鎖，1 小時後重試。');
             }
 
@@ -82,11 +81,9 @@ class AntiBotMiddleware
                 return $this->redirectToChallenge();
             }
 
-            // 正常訪問（可選的詳細日誌）
-            // Log::debug('正常流量通過', ['ip' => $ip, 'path' => $path]);
-
             return $next($request);
-
+        } catch (HttpException $e) {
+            throw $e; // 如果是 403 這種異常，直接再丟出去，讓 Laravel 處理畫面
         } catch (\Exception $e) {
             Log::error('AntiBotMiddleware 異常', [
                 'error' => $e->getMessage(),

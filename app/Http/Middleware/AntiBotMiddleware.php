@@ -20,7 +20,7 @@ class AntiBotMiddleware
     {
         $ip = $request->ip();
         $ua = $request->header('User-Agent');
-        $ua = 'python-requests/2.25.1';
+        // $ua = 'python-requests/2.25.1';
         $statusKey = "bot_status:$ip";
 
         // 1. 【新增】UA 基礎驗證

@@ -316,7 +316,7 @@
     </div>
 
     <div class="footer">
-        <p>&copy; 2024 電商商城 | 爬蟲抓不到我！ 🛡️</p>
+        <p>&copy; 2026 電商商城 | 爬蟲抓不到我！ 🛡️</p>
     </div>
 </body>
 </html>

@@ -217,9 +217,9 @@ Redis (狀態存儲)
 ## 7. 技術規格
 
 ### 7.1 後端技術棧
-- **框架**: Laravel 11
+- **框架**: Laravel 10
 - **中間件**: AntiBotMiddleware
-- **驗證API**: Google reCAPTCHA v3
+- **驗證API**: Google reCAPTCHA v2
 - **緩存**: Redis
 - **HTTP Client**: Guzzle (Laravel Http Facade)
 
@@ -321,7 +321,7 @@ REDIS_PORT=6379
 
 ### Phase 1 (v1.0) - MVP ✅ 已完成
 - User-Agent 檢測
-- reCAPTCHA v3 驗證
+- reCAPTCHA v2 驗證
 - 頻率限制
 - 3 次失敗後 block
 

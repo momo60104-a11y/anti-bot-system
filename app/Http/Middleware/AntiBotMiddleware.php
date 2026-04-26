@@ -12,7 +12,6 @@ use Symfony\Component\HttpKernel\Exception\HttpException;
 
 class AntiBotMiddleware
 {
-    // 預定義的爬蟲關鍵字黑名單
     protected $botKeywords = [
         'python-requests', 'guzzlehttp', 'scrapy', 'headlesschrome', 
         'selenium', 'puppeteer', 'curl', 'wget', 'postman'
@@ -22,94 +21,107 @@ class AntiBotMiddleware
     {
         try {
             $ip = $request->ip();
-            $ua = $request->header('User-Agent');
             $statusKey = "bot_status:$ip";
-            $method = $request->method();
-            $path = $request->path();
-
-            // 1. 【新增】UA 基礎驗證
-            if (empty($ua) || $this->isSuspiciousUa($ua)) {
-                Log::warning('可疑 User-Agent 檢測', [
-                    'ip' => $ip,
-                    'user_agent' => $ua ?: '(空值)',
-                    'method' => $method,
-                    'path' => $path,
-                    'timestamp' => now()
-                ]);
-                
-                Redis::set($statusKey, 'pending_captcha');
-                return $this->redirectToChallenge();
-            }
-
-            // 2. 檢查黑名單狀態
             $status = Redis::get($statusKey);
+
+            // 1. 【優先檢查】如果已經驗證過了，直接放行 (不看 UA 了)
+            if ($status === 'verified') {
+                return $next($request);
+            }
+
+            // 2. 檢查是否被永久封鎖
             if ($status === 'blocked') {
-                Log::warning('被封鎖 IP 嘗試訪問', [
-                    'ip' => $ip,
-                    'user_agent' => $ua,
-                    'method' => $method,
-                    'path' => $path,
-                    'status' => $status
-                ]);
-                abort(403, '您的 IP 因驗證失敗多次已被暫時封鎖，1 小時後重試。');
+                $this->logWarning($request, '被封鎖 IP 嘗試訪問');
+                abort(403, '您的 IP 已被封鎖');
             }
 
+            // 3. 如果是待驗證狀態，繼續顯示驗證頁面
             if ($status === 'pending_captcha') {
-                Log::info('待驗證 IP 訪問', [
-                    'ip' => $ip,
-                    'method' => $method,
-                    'path' => $path
-                ]);
-                
                 return $this->redirectToChallenge();
             }
 
-            // 3. 頻率限制 (每分鐘超過 50 次要求驗證)
-            $rateKey = "rate_limit:$ip:" . now()->format('Hi');
-            $count = Redis::incr($rateKey);
-            if ($count == 1) Redis::expire($rateKey, 60);
+            // 4. 【新訪客或過期訪客】才進行 UA 基礎驗證
+            if ($this->shouldChallengeUserAgent($request)) {
+                return $this->triggerChallenge($request, '可疑 User-Agent 檢測');
+            }
 
-            if ($count > 50) {
-                Log::warning('頻率限制超限', [
-                    'ip' => $ip,
-                    'request_count' => $count,
-                    'time_window' => now()->format('Hi'),
-                    'path' => $path
-                ]);
-                
-                Redis::set($statusKey, 'pending_captcha');
-                return $this->redirectToChallenge();
+            // 5. 頻率限制
+            if ($this->isRateLimited($ip)) {
+                return $this->triggerChallenge($request, '頻率限制超限');
             }
 
             return $next($request);
-        } catch (HttpException $e) {
-            throw $e; // 如果是 403 這種異常，直接再丟出去，讓 Laravel 處理畫面
+
         } catch (\Exception $e) {
-            Log::error('AntiBotMiddleware 異常', [
-                'error' => $e->getMessage(),
-                'file' => $e->getFile(),
-                'line' => $e->getLine(),
-                'ip' => $ip ?? '未知',
-                'timestamp' => now()
-            ]);
-            
-            // 如果 Redis 連線異常，直接放行以避免服務中斷
+            $this->logError($e, $request);
             return $next($request);
         }
     }
 
     /**
-     * 檢查 UA 是否包含可疑字串
+     * 檢查 User-Agent 是否異常
      */
-    private function isSuspiciousUa($ua)
+    private function shouldChallengeUserAgent(Request $request): bool
     {
-        // 將 UA 轉小寫後，檢查 botKeywords 中是否有任何一項被包含在 UA 內
-        return collect($this->botKeywords)->contains(fn($bot) => Str::contains(strtolower($ua), $bot));
+        $ua = $request->header('User-Agent');
+        if (empty($ua)) return true;
+
+        $uaLower = strtolower($ua);
+        return collect($this->botKeywords)->contains(fn($bot) => Str::contains($uaLower, $bot));
     }
 
-    private function redirectToChallenge() 
+    /**
+     * 執行頻率限制邏輯
+     */
+    private function isRateLimited(string $ip): bool
     {
-        // 確保驗證頁面能正確顯示
+        $rateKey = "rate_limit:$ip:" . now()->format('Hi');
+        $count = Redis::incr($rateKey);
+        
+        if ($count == 1) {
+            Redis::expire($rateKey, 60);
+        }
+
+        return $count > 50;
+    }
+
+    /**
+     * 觸發驗證流程並記錄 Log
+     */
+    private function triggerChallenge(Request $request, string $reason): Response
+    {
+        $this->logWarning($request, $reason);
+        Redis::set("bot_status:{$request->ip()}", 'pending_captcha');
+        return $this->redirectToChallenge();
+    }
+
+    /**
+     * 統一的日誌記錄
+     */
+    private function logWarning(Request $request, string $message): void
+    {
+        Log::warning($message, [
+            'ip' => $request->ip(),
+            'ua' => $request->header('User-Agent') ?: '(空)',
+            'path' => $request->path(),
+            'method' => $request->method(),
+        ]);
+    }
+
+    /**
+     * 例外錯誤日誌
+     */
+    private function logError(\Exception $e, Request $request): void
+    {
+        Log::error('AntiBotMiddleware 異常', [
+            'msg' => $e->getMessage(),
+            'ip' => $request->ip(),
+            'line' => $e->getLine()
+        ]);
+    }
+
+    private function redirectToChallenge(): Response
+    {
         return response()->view('errors.captcha_challenge', [], 401);
     }
 }
